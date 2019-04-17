@@ -1,24 +1,71 @@
 using Knet
-import Base: *
-import Knet: getindex
+# import Base: *
+# import Knet: getindex, setindex!
 
 # Matmuls 2d and 3d arrays
-function *(a::AbstractArray{T,2}, b::AbstractArray{T,3}) where T<:Real
-    b_sizes = size(b)
-    a = a * reshape(b, b_sizes[1], :)
-    return reshape(a, :, b_sizes[2:end]...)
-end
+# function *(a::AbstractArray{T,2}, b::AbstractArray{T,3}) where T<:Real
+#     b_sizes = size(b)
+#     a = a * reshape(b, b_sizes[1], :)
+#     return reshape(a, :, b_sizes[2:end]...)
+# end
 
 # Matmuls 2d and 3d arrays for KnetArrays
-function *(a::KnetArray{T,2}, b::KnetArray{T,3}) where T<:Real
+# function *(a::KnetArray{T,2}, b::KnetArray{T,3}) where T<:Real
+#     b_sizes = size(b)
+#     a = a * reshape(b, b_sizes[1], :)
+#     return reshape(a, :, b_sizes[2:end]...)
+# end
+
+# TODO :
+# Since backprop doesn't work with this new import, we define it as a complex function consisting primitives that Autograd can take derivatives of. A primitive derivative of this function would speed things up.
+# function matmul23(a::KnetArray{T,2}, b::KnetArray{T,3}) where T<:Real
+#     b_sizes = size(b)
+#     a = a * reshape(b, b_sizes[1], :)
+#     return reshape(a, :, b_sizes[2:end]...)
+# end
+
+function matmul23(a, b)
     b_sizes = size(b)
     a = a * reshape(b, b_sizes[1], :)
     return reshape(a, :, b_sizes[2:end]...)
 end
 
-function getindex(A::KnetArray{Float32,3}, ::Colon, I::Real, ::Colon)
-    reshape(A, :, size(A,3))[(I-1)*size(A,1)+1:I*size(A,1),:]
-end
+# Wrote these first, then realized we don't need them. Might come in handy later.
+# function matmul23(a::AbstractArray{T,2}, b::AbstractArray{T,3}) where T<:Real
+#     b_sizes = size(b)
+#     a = a * reshape(b, b_sizes[1], :)
+#     return reshape(a, :, b_sizes[2:end]...)
+# end
+
+# function matmul23(a::Param{KnetArray{T,2}}, b::KnetArray{T,3}) where T<:Real
+#     matmul23(value(a), b)
+# end
+
+# function matmul23(a::Param{AbstractArray{T,2}}, b::AbstractArray{T,3}) where T<:Real
+#     matmul23(value(a), b)
+# end
+
+# function matmul23(a::Param{KnetArray{T,2}}, b::AutoGrad.Result{KnetArray{T,3}}) where T<:Real
+#     matmul23(value(a), value(b))
+# end
+
+# function matmul23(a::Param{AbstractArray{T,2}}, b::AutoGrad.Result{AbstractArray{T,3}}) where T<:Real
+#     matmul23(value(a), value(b))
+# end
+
+# @primitive *(x1::KnetArray{T,2},x2::KnetArray{T,3}),dy    
+
+# Not using this anymore
+# function getindex(A::KnetArray{Float32,3}, ::Colon, I::Real, ::Colon)
+#     reshape(A, :, size(A,3))[(I-1)*size(A,1)+1:I*size(A,1),:]
+# end
+
+# Does not work
+# function setindex!(A::KnetArray{Float32,3}, v, ::Colon, I::Real, ::Colon)
+#     A = reshape(A, :, size(A,3))
+# #     setindex!(A, v, (I-1)*size(A,1)+1:I*size(A,1), ::Colon)
+#     A[(I-1)*size(A,1)+1:I*size(A,1),:] = v
+# end
 
 # std doesn't work!
 std2(a, μ) = sqrt(sum(abs2, a .- μ) / (length(a)))
@@ -66,15 +113,30 @@ function (l::Linear)(x)
     return l.w * x .+ l.b
 end
 
+mutable struct Linear3D <: Layer
+    w
+    b
+end
+
+Linear3D(input_size::Int, output_size::Int; atype=Array{Float32}) = Linear3D(param(output_size, input_size, atype=atype), param0(output_size, atype=atype))
+
+function (l::Linear3D)(x)
+    return matmul23(l.w, x) .+ l.b
+end
+
 # Absolutely no difference between Dense and Linear! Except one has dropout and activation function.
 mutable struct Dense <: Layer
-    linear::Linear
+    linear
     pdrop
     func
 end
 
-function Dense(input_size::Int, output_size::Int; pdrop=0.0, func=identity, atype=Array{Float32})
-    return Dense(Linear(input_size, output_size, atype=atype), pdrop, func)
+function Dense(input_size::Int, output_size::Int; pdrop=0.0, func=identity, atype=Array{Float32}, threeD=false)
+    if threeD
+        return Dense(Linear3D(input_size, output_size, atype=atype), pdrop, func)
+    else
+        return Dense(Linear(input_size, output_size, atype=atype), pdrop, func)
+    end
 end
 
 function (a::Dense)(x)
@@ -131,10 +193,10 @@ function divide_to_heads(x, num_heads, head_size, seq_len)
 end
 
 mutable struct SelfAttention <: Layer
-    query::Linear # N*H x E
-    key::Linear
-    value::Linear
-    linear::Linear
+    query::Linear3D # N*H x E
+    key::Linear3D
+    value::Linear3D
+    linear::Linear3D
     num_heads::Int
     seq_len::Int
     embed_size::Int
@@ -149,10 +211,10 @@ function SelfAttention(config)
     head_size = Int(config.embed_size / config.num_heads)
     head_size_sqrt = Int(sqrt(head_size))
     head_size_sqrt * head_size_sqrt != head_size && throw("Square root of head size should be an integer!")
-    query = Linear(config.embed_size, head_size*config.num_heads, atype=config.atype) # H*N is always equal to E
-    key = Linear(config.embed_size, head_size*config.num_heads, atype=config.atype)
-    value = Linear(config.embed_size, head_size*config.num_heads, atype=config.atype)
-    linear = Linear(config.embed_size, config.embed_size, atype=config.atype)
+    query = Linear3D(config.embed_size, head_size*config.num_heads, atype=config.atype) # H*N is always equal to E
+    key = Linear3D(config.embed_size, head_size*config.num_heads, atype=config.atype)
+    value = Linear3D(config.embed_size, head_size*config.num_heads, atype=config.atype)
+    linear = Linear3D(config.embed_size, config.embed_size, atype=config.atype)
     return SelfAttention(query, key, value, linear, config.num_heads, config.seq_len, config.embed_size, head_size, head_size_sqrt, config.attention_pdrop, config.pdrop)
 end
 
@@ -181,13 +243,13 @@ end
 
 mutable struct FeedForward <: Layer
     dense::Dense
-    linear::Linear
+    linear::Linear3D
     pdrop
 end
 
 function FeedForward(config)
-    dense = Dense(config.embed_size, config.ff_hidden_size, func=config.func, atype=config.atype)
-    linear = Linear(config.ff_hidden_size, config.embed_size, atype=config.atype)
+    dense = Dense(config.embed_size, config.ff_hidden_size, func=config.func, atype=config.atype, threeD=true)
+    linear = Linear3D(config.ff_hidden_size, config.embed_size, atype=config.atype)
     return FeedForward(dense, linear, config.pdrop)
 end
 
@@ -208,12 +270,8 @@ function Encoder(config)
 end
 
 function (e::Encoder)(x, attention_mask)
-    old_x = deepcopy(x)
-    x = e.self_attention(x, attention_mask)
-    x = e.layer_norm1(old_x .+ x)
-    old_x = deepcopy(x)
-    x = e.feed_forward(x)
-    return e.layer_norm2(old_x .+ x)
+    x = e.layer_norm1(x .+ e.self_attention(x, attention_mask))
+    return e.layer_norm2(x .+ e.feed_forward(x))
 end
 
 mutable struct Bert <: Layer
@@ -253,7 +311,11 @@ end
 Pooler(embed_size::Int; atype=Array{Float32}) = Pooler(Linear(embed_size, embed_size, atype=atype))
 
 function (p::Pooler)(x)
-    return tanh.(p.linear(x[:,1,:])) # Use only CLS token
+    # TODO :
+    # Gave up on getindex function for 3D matrices because I could not figure out how to write setindex! for backprop
+#     x = reshape(x, :, size(x,3))
+#     return tanh.(p.linear(x[:,1,:])) # Use only CLS token. Returns ExB
+    return tanh.(p.linear(reshape(x, :, size(x,3))[1:size(x,1),:]))
 end
 
 mutable struct NSPHead <: Layer
@@ -267,13 +329,13 @@ NSPHead(embed_size; atype=Array{Float32}) = NSPHead(Linear(embed_size, 2, atype=
 mutable struct MLMHead <: Layer
     dense::Dense
     layer_norm::LayerNormalization
-    linear::Linear
+    linear::Linear3D
 end
 
 function MLMHead(config)#, embedding_matrix)
-    dense = Dense(config.embed_size, config.embed_size, func=config.func, pdrop=0.0, atype=config.atype)
+    dense = Dense(config.embed_size, config.embed_size, func=config.func, pdrop=0.0, atype=config.atype, threeD=true)
     layer_norm = LayerNormalization(config.embed_size, atype=config.atype)
-    linear = Linear(config.embed_size, config.vocab_size, atype=config.atype)
+    linear = Linear3D(config.embed_size, config.vocab_size, atype=config.atype)
     # TODO : Do this a shared weight
     # linear.w = embedding_matrix
     return MLMHead(dense, layer_norm, linear)
