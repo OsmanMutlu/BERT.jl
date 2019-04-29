@@ -71,10 +71,10 @@ function read_and_process(filename, dict)
     end
     
     # Padding to maximum
-    max_seq = findmax(length.(x))[1]
-    for i in 1:length(x)
-        append!(x[i], fill(1, max_seq - length(x[i]))) # 1 is for "[PAD]"
-    end
+#     max_seq = findmax(length.(x))[1]
+#     for i in 1:length(x)
+#         append!(x[i], fill(1, max_seq - length(x[i]))) # 1 is for "[PAD]"
+#     end
     
     return (x, y)
 end

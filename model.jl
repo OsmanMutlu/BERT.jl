@@ -1,4 +1,5 @@
 using Knet
+using SpecialFunctions
 # import Base: *
 # import Knet: getindex, setindex!
 
@@ -23,6 +24,8 @@ using Knet
 #     a = a * reshape(b, b_sizes[1], :)
 #     return reshape(a, :, b_sizes[2:end]...)
 # end
+
+gelu(x) = x .* 0.5 .* (1.0 .+ erf.(x ./ sqrt(2.0)))
 
 function matmul23(a, b)
     b_sizes = size(b)
@@ -57,7 +60,10 @@ end
 
 # Not using this anymore
 # function getindex(A::KnetArray{Float32,3}, ::Colon, I::Real, ::Colon)
-#     reshape(A, :, size(A,3))[(I-1)*size(A,1)+1:I*size(A,1),:]
+#     sizes = size(A)
+#     A = reshape(A, :, sizes[3])
+#     return A[(I-1)*sizes[1]+1:I*sizes[1],:]
+# #    reshape(A, :, size(A,3))[(I-1)*size(A,1)+1:I*size(A,1),:]
 # end
 
 # Does not work
@@ -68,7 +74,7 @@ end
 # end
 
 # std doesn't work!
-std2(a, μ) = sqrt(sum(abs2, a .- μ) / (length(a)))
+std2(a, μ, ϵ) = sqrt.(Knet.mean(abs2.(a .- μ), dims=1) .+ ϵ)
 
 # Legend
 # V -> Vocab size, E -> Embedding size, S -> Sequence length, B -> Batch size
@@ -152,8 +158,8 @@ end
 LayerNormalization(hidden_size::Int; epsilon=1e-12, atype=Array{Float32}) = LayerNormalization(Param(atype(ones(hidden_size))), param0(hidden_size, atype=atype), epsilon)
 
 function (n::LayerNormalization)(x)
-    μ = Knet.mean(x)
-    x = (x .- μ) ./ std2(x, μ) # corrected=false for n
+    μ = Knet.mean(x, dims=1)
+    x = (x .- μ) ./ std2(x, μ, n.ϵ) # corrected=false for n
     return n.γ .* x .+ n.β
 end
 
@@ -314,7 +320,7 @@ function (p::Pooler)(x)
     # TODO :
     # Gave up on getindex function for 3D matrices because I could not figure out how to write setindex! for backprop
 #     x = reshape(x, :, size(x,3))
-#     return tanh.(p.linear(x[:,1,:])) # Use only CLS token. Returns ExB
+#    return tanh.(p.linear(x[:,1,:])) # Use only CLS token. Returns ExB
     return tanh.(p.linear(reshape(x, :, size(x,3))[1:size(x,1),:]))
 end
 
@@ -332,12 +338,12 @@ mutable struct MLMHead <: Layer
     linear::Linear3D
 end
 
-function MLMHead(config)#, embedding_matrix)
+function MLMHead(config, embedding_matrix)
     dense = Dense(config.embed_size, config.embed_size, func=config.func, pdrop=0.0, atype=config.atype, threeD=true)
     layer_norm = LayerNormalization(config.embed_size, atype=config.atype)
     linear = Linear3D(config.embed_size, config.vocab_size, atype=config.atype)
     # TODO : Do this a shared weight
-    # linear.w = embedding_matrix
+    #linear.w = permutedims(embedding_matrix, (2,1))
     return MLMHead(dense, layer_norm, linear)
 end
 
@@ -358,7 +364,7 @@ function BertPreTraining(config)
     bert = Bert(config)
     pooler = Pooler(config.embed_size, atype=config.atype)
     nsp = NSPHead(config.embed_size, atype=config.atype)
-    mlm = MLMHead(config) # TODO : Dont forget about embedding matrix
+    mlm = MLMHead(config, bert.embed_layer.wordpiece.w) # TODO : Dont forget about embedding matrix
     return BertPreTraining(bert, pooler, nsp, mlm)
 end
 
@@ -374,7 +380,7 @@ function (b::BertPreTraining)(x, segment_ids, mlm_labels, nsp_labels; attention_
     return mlm_loss + nsp_loss
 end
 
-function (b::BertPreTraining)(dtrn::PreTrainingData)
+function (b::BertPreTraining)(dtrn)
     lvals = []
     for (x, attention_mask, segment_ids, mlm_labels, nsp_labels) in dtrn
         push!(lvals, b(x, segment_ids, mlm_labels, nsp_labels, attention_mask=attention_mask))
@@ -382,7 +388,55 @@ function (b::BertPreTraining)(dtrn::PreTrainingData)
     return Knet.mean(lvals)
 end
 
-function load_from_torch(model, num_encoder, atype, torch_model)
+mutable struct BertClassification <: Layer
+    bert::Bert
+    pooler::Pooler
+    linear::Linear
+    pdrop
+end
+
+function BertClassification(config, num_of_classes)
+    bert = Bert(config)
+    pooler = Pooler(config.embed_size, atype=config.atype)
+    linear = Linear(config.embed_size, num_of_classes, atype=config.atype)
+    return BertClassification(bert, pooler, linear, config.pdrop)
+end
+
+function (b::BertClassification)(x, segment_ids; attention_mask=nothing)
+    x = b.bert(x, segment_ids, attention_mask=attention_mask)
+    x = dropout(b.pooler(x), b.pdrop) # 2xB
+    return b.linear(x)
+end
+
+function (b::BertClassification)(x, segment_ids, y; attention_mask=nothing)
+    return nll(b(x, segment_ids, attention_mask=attention_mask), y)
+end
+
+function (b::BertClassification)(dtrn)
+    lvals = []
+    for (x, attention_mask, segment_ids, y) in dtrn
+        push!(lvals, b(x, segment_ids, y, attention_mask=attention_mask))
+    end
+    return Knet.mean(lvals)
+end
+
+mutable struct Config
+    embed_size::Int
+    vocab_size::Int
+    ff_hidden_size::Int
+    max_seq_len::Int
+    seq_len::Int
+    num_segment::Int
+    num_heads::Int
+    num_encoder::Int
+    batchsize::Int
+    atype
+    pdrop
+    attention_pdrop
+    func
+end
+
+function load_from_torch_base(model, num_encoder, atype, torch_model)
     # Embed Layer
     model.bert.embed_layer.wordpiece.w = atype(permutedims(torch_model["bert.embeddings.word_embeddings.weight"][:cpu]()[:numpy](), (2,1)))
     model.bert.embed_layer.positional.w = atype(permutedims(torch_model["bert.embeddings.position_embeddings.weight"][:cpu]()[:numpy](), (2,1)))
@@ -392,18 +446,6 @@ function load_from_torch(model, num_encoder, atype, torch_model)
     
     # Encoder Stack
     for i in 1:num_encoder
-        # Don't know if i should permute these?
-        
-        model.bert.encoder_stack[i].self_attention.query.w = atype(permutedims(torch_model["bert.encoder.layer.$(i-1).attention.self.query.weight"][:cpu]()[:numpy](), (2,1)))
-        model.bert.encoder_stack[i].self_attention.query.b = atype(torch_model["bert.encoder.layer.$(i-1).attention.self.query.bias"][:cpu]()[:numpy]())
-        model.bert.encoder_stack[i].self_attention.key.w = atype(permutedims(torch_model["bert.encoder.layer.$(i-1).attention.self.key.weight"][:cpu]()[:numpy](), (2,1)))
-        model.bert.encoder_stack[i].self_attention.key.b = atype(torch_model["bert.encoder.layer.$(i-1).attention.self.key.bias"][:cpu]()[:numpy]())
-        model.bert.encoder_stack[i].self_attention.value.w = atype(permutedims(torch_model["bert.encoder.layer.$(i-1).attention.self.value.weight"][:cpu]()[:numpy](), (2,1)))
-        model.bert.encoder_stack[i].self_attention.value.b = atype(torch_model["bert.encoder.layer.$(i-1).attention.self.value.bias"][:cpu]()[:numpy]())
-        model.bert.encoder_stack[i].self_attention.linear.w = atype(permutedims(torch_model["bert.encoder.layer.$(i-1).attention.output.dense.weight"][:cpu]()[:numpy](), (2,1)))
-        model.bert.encoder_stack[i].self_attention.linear.b = atype(torch_model["bert.encoder.layer.$(i-1).attention.output.dense.bias"][:cpu]()[:numpy]())
-        
-        #=
         model.bert.encoder_stack[i].self_attention.query.w = atype(torch_model["bert.encoder.layer.$(i-1).attention.self.query.weight"][:cpu]()[:numpy]())
         model.bert.encoder_stack[i].self_attention.query.b = atype(torch_model["bert.encoder.layer.$(i-1).attention.self.query.bias"][:cpu]()[:numpy]())
         model.bert.encoder_stack[i].self_attention.key.w = atype(torch_model["bert.encoder.layer.$(i-1).attention.self.key.weight"][:cpu]()[:numpy]())
@@ -412,7 +454,6 @@ function load_from_torch(model, num_encoder, atype, torch_model)
         model.bert.encoder_stack[i].self_attention.value.b = atype(torch_model["bert.encoder.layer.$(i-1).attention.self.value.bias"][:cpu]()[:numpy]())
         model.bert.encoder_stack[i].self_attention.linear.w = atype(torch_model["bert.encoder.layer.$(i-1).attention.output.dense.weight"][:cpu]()[:numpy]())
         model.bert.encoder_stack[i].self_attention.linear.b = atype(torch_model["bert.encoder.layer.$(i-1).attention.output.dense.bias"][:cpu]()[:numpy]())
-        =#
         
         model.bert.encoder_stack[i].layer_norm1.γ = atype(torch_model["bert.encoder.layer.$(i-1).attention.output.LayerNorm.gamma"][:cpu]()[:numpy]())
         model.bert.encoder_stack[i].layer_norm1.β = atype(torch_model["bert.encoder.layer.$(i-1).attention.output.LayerNorm.beta"][:cpu]()[:numpy]())
@@ -424,23 +465,36 @@ function load_from_torch(model, num_encoder, atype, torch_model)
         model.bert.encoder_stack[i].layer_norm2.β = atype(torch_model["bert.encoder.layer.$(i-1).output.LayerNorm.beta"][:cpu]()[:numpy]())
     end
     
-    # Pooler. Don't know if i should permute this?
-    #model.pooler.linear.w = atype(torch_model["bert.pooler.dense.weight"][:cpu]()[:numpy]())
-    model.pooler.linear.w = atype(permutedims(torch_model["bert.pooler.dense.weight"][:cpu]()[:numpy](), (2,1)))
+    # Pooler
+    model.pooler.linear.w = atype(torch_model["bert.pooler.dense.weight"][:cpu]()[:numpy]())
     model.pooler.linear.b = atype(torch_model["bert.pooler.dense.bias"][:cpu]()[:numpy]())
+    
+    return model
+end
+
+function load_from_torch_pretraining(model, num_encoder, atype, torch_model)
+    model = load_from_torch_base(model, num_encoder, atype, torch_model)
     
     # NSP Head
     model.nsp.linear.w = atype(torch_model["cls.seq_relationship.weight"][:cpu]()[:numpy]())
     model.nsp.linear.b = atype(torch_model["cls.seq_relationship.bias"][:cpu]()[:numpy]())
     
-    # MLM Head. Don't know if i should permute this?
+    # MLM Head.
     model.mlm.dense.linear.w = atype(torch_model["cls.predictions.transform.dense.weight"][:cpu]()[:numpy]())
-    #model.mlm.dense.linear.w = atype(permutedims(torch_model["cls.predictions.transform.dense.weight"][:cpu]()[:numpy](), (2,1)))
     model.mlm.dense.linear.b = atype(torch_model["cls.predictions.transform.dense.bias"][:cpu]()[:numpy]())
     model.mlm.layer_norm.γ = atype(torch_model["cls.predictions.transform.LayerNorm.gamma"][:cpu]()[:numpy]())
     model.mlm.layer_norm.β = atype(torch_model["cls.predictions.transform.LayerNorm.beta"][:cpu]()[:numpy]())
     model.mlm.linear.w = atype(torch_model["cls.predictions.decoder.weight"][:cpu]()[:numpy]())
     model.mlm.linear.b = atype(torch_model["cls.predictions.bias"][:cpu]()[:numpy]())
+    
+    return model
+end
+
+function load_from_torch_classification(model, num_encoder, atype, torch_model)
+    model = load_from_torch_base(model, num_encoder, atype, torch_model)
+    
+    model.linear.w = atype(torch_model["classifier.weight"][:cpu]()[:numpy]())
+    model.linear.b = atype(torch_model["classifier.bias"][:cpu]()[:numpy]())
     
     return model
 end
