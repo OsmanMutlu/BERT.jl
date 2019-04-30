@@ -33,6 +33,14 @@ function matmul23(a, b)
     return reshape(a, :, b_sizes[2:end]...)
 end
 
+#function mypermutedims(A::KnetArray{Float32}, dims)
+#    return typeof(A)(permutedims(Array{Float32}(A) , dims))
+#end
+# TODO : Check if this is correct for backprop
+function mypermutedims(A, dims)
+    return KnetArray{Float32}(permutedims(Array{Float32}(value(A)) , dims))
+end
+
 # Wrote these first, then realized we don't need them. Might come in handy later.
 # function matmul23(a::AbstractArray{T,2}, b::AbstractArray{T,3}) where T<:Real
 #     b_sizes = size(b)
@@ -194,7 +202,7 @@ end
 
 function divide_to_heads(x, num_heads, head_size, seq_len)
     x = reshape(x, (head_size, num_heads, seq_len, :))
-    x = permutedims(x, (1,3,2,4))
+    x = mypermutedims(x, (1,3,2,4))
     return reshape(x, (head_size, seq_len, :)) # Reshape to 3D so bmm can handle it.
 end
 
@@ -232,7 +240,7 @@ function (s::SelfAttention)(x, attention_mask)
     value = divide_to_heads(s.value(x), s.num_heads, s.head_size, s.seq_len)
     
     # Scaled Dot Product Attention
-    query = bmm(permutedims(key, (2,1,3)), query)
+    query = bmm(mypermutedims(key, (2,1,3)), query)
     query = query ./ s.head_size_sqrt # Scale down. I init this value to avoid taking sqrt every forward operation.
     # Masking. First reshape to 4d, then add mask, then reshape back to 3d.
     query = reshape(reshape(query, (s.seq_len, s.seq_len, s.num_heads, :)) .+ attention_mask, (s.seq_len, s.seq_len, :))
@@ -240,7 +248,7 @@ function (s::SelfAttention)(x, attention_mask)
     query = Knet.softmax(query, dims=1)
     query = dropout(query, s.attention_pdrop)
     query = bmm(value, query)
-    query = permutedims(reshape(query, (s.head_size, s.seq_len, s.num_heads, :)), (1,3,2,4))
+    query = mypermutedims(reshape(query, (s.head_size, s.seq_len, s.num_heads, :)), (1,3,2,4))
     
     query = reshape(query, (s.embed_size, s.seq_len, :)) # Concat
     return dropout(s.linear(query), s.pdrop) # Linear transformation at the end
@@ -438,36 +446,36 @@ end
 
 function load_from_torch_base(model, num_encoder, atype, torch_model)
     # Embed Layer
-    model.bert.embed_layer.wordpiece.w = atype(permutedims(torch_model["bert.embeddings.word_embeddings.weight"][:cpu]()[:numpy](), (2,1)))
-    model.bert.embed_layer.positional.w = atype(permutedims(torch_model["bert.embeddings.position_embeddings.weight"][:cpu]()[:numpy](), (2,1)))
-    model.bert.embed_layer.segment.w = atype(permutedims(torch_model["bert.embeddings.token_type_embeddings.weight"][:cpu]()[:numpy](), (2,1)))
-    model.bert.embed_layer.layer_norm.γ = atype(torch_model["bert.embeddings.LayerNorm.gamma"][:cpu]()[:numpy]())
-    model.bert.embed_layer.layer_norm.β = atype(torch_model["bert.embeddings.LayerNorm.beta"][:cpu]()[:numpy]())
+    model.bert.embed_layer.wordpiece.w = Param(atype(permutedims(torch_model["bert.embeddings.word_embeddings.weight"][:cpu]()[:numpy](), (2,1))))
+    model.bert.embed_layer.positional.w = Param(atype(permutedims(torch_model["bert.embeddings.position_embeddings.weight"][:cpu]()[:numpy](), (2,1))))
+    model.bert.embed_layer.segment.w = Param(atype(permutedims(torch_model["bert.embeddings.token_type_embeddings.weight"][:cpu]()[:numpy](), (2,1))))
+    model.bert.embed_layer.layer_norm.γ = Param(atype(torch_model["bert.embeddings.LayerNorm.gamma"][:cpu]()[:numpy]()))
+    model.bert.embed_layer.layer_norm.β = Param(atype(torch_model["bert.embeddings.LayerNorm.beta"][:cpu]()[:numpy]()))
     
     # Encoder Stack
     for i in 1:num_encoder
-        model.bert.encoder_stack[i].self_attention.query.w = atype(torch_model["bert.encoder.layer.$(i-1).attention.self.query.weight"][:cpu]()[:numpy]())
-        model.bert.encoder_stack[i].self_attention.query.b = atype(torch_model["bert.encoder.layer.$(i-1).attention.self.query.bias"][:cpu]()[:numpy]())
-        model.bert.encoder_stack[i].self_attention.key.w = atype(torch_model["bert.encoder.layer.$(i-1).attention.self.key.weight"][:cpu]()[:numpy]())
-        model.bert.encoder_stack[i].self_attention.key.b = atype(torch_model["bert.encoder.layer.$(i-1).attention.self.key.bias"][:cpu]()[:numpy]())
-        model.bert.encoder_stack[i].self_attention.value.w = atype(torch_model["bert.encoder.layer.$(i-1).attention.self.value.weight"][:cpu]()[:numpy]())
-        model.bert.encoder_stack[i].self_attention.value.b = atype(torch_model["bert.encoder.layer.$(i-1).attention.self.value.bias"][:cpu]()[:numpy]())
-        model.bert.encoder_stack[i].self_attention.linear.w = atype(torch_model["bert.encoder.layer.$(i-1).attention.output.dense.weight"][:cpu]()[:numpy]())
-        model.bert.encoder_stack[i].self_attention.linear.b = atype(torch_model["bert.encoder.layer.$(i-1).attention.output.dense.bias"][:cpu]()[:numpy]())
+        model.bert.encoder_stack[i].self_attention.query.w = Param(atype(torch_model["bert.encoder.layer.$(i-1).attention.self.query.weight"][:cpu]()[:numpy]()))
+        model.bert.encoder_stack[i].self_attention.query.b = Param(atype(torch_model["bert.encoder.layer.$(i-1).attention.self.query.bias"][:cpu]()[:numpy]()))
+        model.bert.encoder_stack[i].self_attention.key.w = Param(atype(torch_model["bert.encoder.layer.$(i-1).attention.self.key.weight"][:cpu]()[:numpy]()))
+        model.bert.encoder_stack[i].self_attention.key.b = Param(atype(torch_model["bert.encoder.layer.$(i-1).attention.self.key.bias"][:cpu]()[:numpy]()))
+        model.bert.encoder_stack[i].self_attention.value.w = Param(atype(torch_model["bert.encoder.layer.$(i-1).attention.self.value.weight"][:cpu]()[:numpy]()))
+        model.bert.encoder_stack[i].self_attention.value.b = Param(atype(torch_model["bert.encoder.layer.$(i-1).attention.self.value.bias"][:cpu]()[:numpy]()))
+        model.bert.encoder_stack[i].self_attention.linear.w = Param(atype(torch_model["bert.encoder.layer.$(i-1).attention.output.dense.weight"][:cpu]()[:numpy]()))
+        model.bert.encoder_stack[i].self_attention.linear.b = Param(atype(torch_model["bert.encoder.layer.$(i-1).attention.output.dense.bias"][:cpu]()[:numpy]()))
         
-        model.bert.encoder_stack[i].layer_norm1.γ = atype(torch_model["bert.encoder.layer.$(i-1).attention.output.LayerNorm.gamma"][:cpu]()[:numpy]())
-        model.bert.encoder_stack[i].layer_norm1.β = atype(torch_model["bert.encoder.layer.$(i-1).attention.output.LayerNorm.beta"][:cpu]()[:numpy]())
-        model.bert.encoder_stack[i].feed_forward.dense.linear.w = atype(torch_model["bert.encoder.layer.$(i-1).intermediate.dense.weight"][:cpu]()[:numpy]())
-        model.bert.encoder_stack[i].feed_forward.dense.linear.b = atype(torch_model["bert.encoder.layer.$(i-1).intermediate.dense.bias"][:cpu]()[:numpy]())
-        model.bert.encoder_stack[i].feed_forward.linear.w = atype(torch_model["bert.encoder.layer.$(i-1).output.dense.weight"][:cpu]()[:numpy]())
-        model.bert.encoder_stack[i].feed_forward.linear.b = atype(torch_model["bert.encoder.layer.$(i-1).output.dense.bias"][:cpu]()[:numpy]())
-        model.bert.encoder_stack[i].layer_norm2.γ = atype(torch_model["bert.encoder.layer.$(i-1).output.LayerNorm.gamma"][:cpu]()[:numpy]())
-        model.bert.encoder_stack[i].layer_norm2.β = atype(torch_model["bert.encoder.layer.$(i-1).output.LayerNorm.beta"][:cpu]()[:numpy]())
+        model.bert.encoder_stack[i].layer_norm1.γ = Param(atype(torch_model["bert.encoder.layer.$(i-1).attention.output.LayerNorm.gamma"][:cpu]()[:numpy]()))
+        model.bert.encoder_stack[i].layer_norm1.β = Param(atype(torch_model["bert.encoder.layer.$(i-1).attention.output.LayerNorm.beta"][:cpu]()[:numpy]()))
+        model.bert.encoder_stack[i].feed_forward.dense.linear.w = Param(atype(torch_model["bert.encoder.layer.$(i-1).intermediate.dense.weight"][:cpu]()[:numpy]()))
+        model.bert.encoder_stack[i].feed_forward.dense.linear.b = Param(atype(torch_model["bert.encoder.layer.$(i-1).intermediate.dense.bias"][:cpu]()[:numpy]()))
+        model.bert.encoder_stack[i].feed_forward.linear.w = Param(atype(torch_model["bert.encoder.layer.$(i-1).output.dense.weight"][:cpu]()[:numpy]()))
+        model.bert.encoder_stack[i].feed_forward.linear.b = Param(atype(torch_model["bert.encoder.layer.$(i-1).output.dense.bias"][:cpu]()[:numpy]()))
+        model.bert.encoder_stack[i].layer_norm2.γ = Param(atype(torch_model["bert.encoder.layer.$(i-1).output.LayerNorm.gamma"][:cpu]()[:numpy]()))
+        model.bert.encoder_stack[i].layer_norm2.β = Param(atype(torch_model["bert.encoder.layer.$(i-1).output.LayerNorm.beta"][:cpu]()[:numpy]()))
     end
     
     # Pooler
-    model.pooler.linear.w = atype(torch_model["bert.pooler.dense.weight"][:cpu]()[:numpy]())
-    model.pooler.linear.b = atype(torch_model["bert.pooler.dense.bias"][:cpu]()[:numpy]())
+    model.pooler.linear.w = Param(atype(torch_model["bert.pooler.dense.weight"][:cpu]()[:numpy]()))
+    model.pooler.linear.b = Param(atype(torch_model["bert.pooler.dense.bias"][:cpu]()[:numpy]()))
     
     return model
 end
@@ -476,16 +484,16 @@ function load_from_torch_pretraining(model, num_encoder, atype, torch_model)
     model = load_from_torch_base(model, num_encoder, atype, torch_model)
     
     # NSP Head
-    model.nsp.linear.w = atype(torch_model["cls.seq_relationship.weight"][:cpu]()[:numpy]())
-    model.nsp.linear.b = atype(torch_model["cls.seq_relationship.bias"][:cpu]()[:numpy]())
+    model.nsp.linear.w = Param(atype(torch_model["cls.seq_relationship.weight"][:cpu]()[:numpy]()))
+    model.nsp.linear.b = Param(atype(torch_model["cls.seq_relationship.bias"][:cpu]()[:numpy]()))
     
     # MLM Head.
-    model.mlm.dense.linear.w = atype(torch_model["cls.predictions.transform.dense.weight"][:cpu]()[:numpy]())
-    model.mlm.dense.linear.b = atype(torch_model["cls.predictions.transform.dense.bias"][:cpu]()[:numpy]())
-    model.mlm.layer_norm.γ = atype(torch_model["cls.predictions.transform.LayerNorm.gamma"][:cpu]()[:numpy]())
-    model.mlm.layer_norm.β = atype(torch_model["cls.predictions.transform.LayerNorm.beta"][:cpu]()[:numpy]())
-    model.mlm.linear.w = atype(torch_model["cls.predictions.decoder.weight"][:cpu]()[:numpy]())
-    model.mlm.linear.b = atype(torch_model["cls.predictions.bias"][:cpu]()[:numpy]())
+    model.mlm.dense.linear.w = Param(atype(torch_model["cls.predictions.transform.dense.weight"][:cpu]()[:numpy]()))
+    model.mlm.dense.linear.b = Param(atype(torch_model["cls.predictions.transform.dense.bias"][:cpu]()[:numpy]()))
+    model.mlm.layer_norm.γ = Param(atype(torch_model["cls.predictions.transform.LayerNorm.gamma"][:cpu]()[:numpy]()))
+    model.mlm.layer_norm.β = Param(atype(torch_model["cls.predictions.transform.LayerNorm.beta"][:cpu]()[:numpy]()))
+    model.mlm.linear.w = Param(atype(torch_model["cls.predictions.decoder.weight"][:cpu]()[:numpy]()))
+    model.mlm.linear.b = Param(atype(torch_model["cls.predictions.bias"][:cpu]()[:numpy]()))
     
     return model
 end
@@ -493,8 +501,8 @@ end
 function load_from_torch_classification(model, num_encoder, atype, torch_model)
     model = load_from_torch_base(model, num_encoder, atype, torch_model)
     
-    model.linear.w = atype(torch_model["classifier.weight"][:cpu]()[:numpy]())
-    model.linear.b = atype(torch_model["classifier.bias"][:cpu]()[:numpy]())
+    model.linear.w = Param(atype(torch_model["classifier.weight"][:cpu]()[:numpy]()))
+    model.linear.b = Param(atype(torch_model["classifier.bias"][:cpu]()[:numpy]()))
     
     return model
 end
