@@ -33,14 +33,6 @@ function matmul23(a, b)
     return reshape(a, :, b_sizes[2:end]...)
 end
 
-#function mypermutedims(A::KnetArray{Float32}, dims)
-#    return typeof(A)(permutedims(Array{Float32}(A) , dims))
-#end
-# TODO : Check if this is correct for backprop
-function mypermutedims(A, dims)
-    return KnetArray{Float32}(permutedims(Array{Float32}(value(A)) , dims))
-end
-
 # Wrote these first, then realized we don't need them. Might come in handy later.
 # function matmul23(a::AbstractArray{T,2}, b::AbstractArray{T,3}) where T<:Real
 #     b_sizes = size(b)
@@ -202,7 +194,7 @@ end
 
 function divide_to_heads(x, num_heads, head_size, seq_len)
     x = reshape(x, (head_size, num_heads, seq_len, :))
-    x = mypermutedims(x, (1,3,2,4))
+    x = permutedims(x, (1,3,2,4))
     return reshape(x, (head_size, seq_len, :)) # Reshape to 3D so bmm can handle it.
 end
 
@@ -240,7 +232,7 @@ function (s::SelfAttention)(x, attention_mask)
     value = divide_to_heads(s.value(x), s.num_heads, s.head_size, s.seq_len)
     
     # Scaled Dot Product Attention
-    query = bmm(mypermutedims(key, (2,1,3)), query)
+    query = bmm(permutedims(key, (2,1,3)), query)
     query = query ./ s.head_size_sqrt # Scale down. I init this value to avoid taking sqrt every forward operation.
     # Masking. First reshape to 4d, then add mask, then reshape back to 3d.
     query = reshape(reshape(query, (s.seq_len, s.seq_len, s.num_heads, :)) .+ attention_mask, (s.seq_len, s.seq_len, :))
@@ -248,7 +240,7 @@ function (s::SelfAttention)(x, attention_mask)
     query = Knet.softmax(query, dims=1)
     query = dropout(query, s.attention_pdrop)
     query = bmm(value, query)
-    query = mypermutedims(reshape(query, (s.head_size, s.seq_len, s.num_heads, :)), (1,3,2,4))
+    query = permutedims(reshape(query, (s.head_size, s.seq_len, s.num_heads, :)), (1,3,2,4))
     
     query = reshape(query, (s.embed_size, s.seq_len, :)) # Concat
     return dropout(s.linear(query), s.pdrop) # Linear transformation at the end

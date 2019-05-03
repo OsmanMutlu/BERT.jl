@@ -2,6 +2,7 @@ import Base: length, iterate
 using Random
 using CSV
 using PyCall
+using Dates
 
 VOCABFILE = "bert-base-uncased-vocab.txt"
 NUM_CLASSES = 2
@@ -177,17 +178,24 @@ function mytrain!(model, dtrn, ddev, best_acc)
             update!(value(par), g, par.opt)
         end
         push!(losses, value(J))
-        if k % 5000 == 0
+        if k % 500 == 0
+            print(Dates.format(now(), "HH:MM:SS"), "  ->  ")
+            println("Training loss at $k iteration is : ", Knet.mean(losses))
+            flush(stdout)
             acc = accuracy2(model, ddev)
+            print(Dates.format(now(), "HH:MM:SS"), "  ->  ")
             println("Accuracy at $k iteration : ", acc)
+            flush(stdout)
             if acc > best_acc
                 best_acc = acc
+                print(Dates.format(now(), "HH:MM:SS"), "  ->  ")
                 println("Saving...")
                 Knet.save("model_bert.jld2", "model", model)
+                flush(stdout)
             end
         end
     end
-    return Knet.mean(losses)
+    return (best_acc, Knet.mean(losses))
 end
 
 initopt!(model)
@@ -198,13 +206,15 @@ devloss = []
 best_acc = 0.0
 for epoch in 1:30
     global best_acc
+    print(Dates.format(now(), "HH:MM:SS"), "  ->  ")
     println("Epoch : ", epoch)
-    lss = mytrain!(model, dtrn, ddev, best_acc)
+    flush(stdout)
+    (best_acc, lss) = mytrain!(model, dtrn, ddev, best_acc)
     #push!(trnloss, model(dtrn))
+    print(Dates.format(now(), "HH:MM:SS"), "  ->  ")
     println("Training loss at $epoch epoch is : $lss")
+    flush(stdout)
     #=
-    push!(devloss, model(ddev))
-    println("Dev loss is : $devloss[epoch]")
     acc = accuracy2(model, ddev)
     println("Accuracy : ", acc)
     if acc > best_acc
@@ -217,4 +227,5 @@ end
 
 model = Knet.load("model_bert.jld2", "model")
 result = accuracy2(model, dtst)
+print(Dates.format(now(), "HH:MM:SS"), "  ->  ")
 println("Test accuracy is : $result")
