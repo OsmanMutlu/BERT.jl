@@ -6,6 +6,8 @@ using Dates
 
 VOCABFILE = "bert-base-uncased-vocab.txt"
 NUM_CLASSES = 2
+LEARNING_RATE = 2e-5
+NUM_OF_EPOCHS = 30
 
 token2int = Dict()
 f = open(VOCABFILE) do file
@@ -18,6 +20,7 @@ int2token = Dict(value => key for (key, value) in token2int)
 VOCABSIZE = length(token2int)
 
 include("preprocess.jl")
+include("optimizer.jl")
 
 mutable struct ClassificationData
     input_ids
@@ -138,7 +141,7 @@ end
 include("model.jl")
 
 # Embedding Size, Vocab Size, Intermediate Hidden Size, Max Sequence Length, Sequence Length, Num of Segments, Num of Heads in Attention, Num of Encoders in Stack, Batch Size, Matrix Type, General Dropout Rate, Attention Dropout Rate, Activation Function 
-config = Config(768, 30522, 3072, 512, 64, 2, 12, 12, 10, KnetArray{Float32}, 0.1, 0.1, gelu)
+config = Config(768, 30522, 3072, 512, 64, 2, 12, 12, 8, KnetArray{Float32}, 0.1, 0.1, gelu)
 
 dtrn = ClassificationData2("../project/sst-train.tsv", batchsize=config.batchsize, seq_len=config.seq_len)
 ddev = ClassificationData2("../project/sst-dev.tsv", batchsize=config.batchsize, seq_len=config.seq_len)
@@ -163,14 +166,19 @@ function accuracy2(model, dtst)
     return true_count/all_count
 end
 
-function initopt!(model, optimizer="Adam()")
+function initopt!(model, t_total; lr=0.001, warmup=0.1)
     for par in params(model)
-        par.opt = eval(Meta.parse(optimizer))
+        if length(size(value(par))) === 1
+            par.opt = BertAdam(lr=lr, warmup=warmup, t_total=t_total, w_decay_rate=0.01)
+        else
+            par.opt = BertAdam(lr=lr, warmup=warmup, t_total=t_total)
+        end
     end
 end
 
 function mytrain!(model, dtrn, ddev, best_acc)
     losses = []
+    accs = []
     for (k, (x, attention_mask, segment_ids, labels)) in enumerate(dtrn)
         J = @diff model(x, segment_ids, labels, attention_mask=attention_mask)
         for par in params(model)
@@ -180,9 +188,10 @@ function mytrain!(model, dtrn, ddev, best_acc)
         push!(losses, value(J))
         if k % 500 == 0
             print(Dates.format(now(), "HH:MM:SS"), "  ->  ")
-            println("Training loss at $k iteration is : ", Knet.mean(losses))
+            println("Training loss up to $k iteration is : ", Knet.mean(losses))
             flush(stdout)
             acc = accuracy2(model, ddev)
+            push!(accs, acc)
             print(Dates.format(now(), "HH:MM:SS"), "  ->  ")
             println("Accuracy at $k iteration : ", acc)
             flush(stdout)
@@ -195,24 +204,25 @@ function mytrain!(model, dtrn, ddev, best_acc)
             end
         end
     end
-    return (best_acc, Knet.mean(losses))
+    return (best_acc, Knet.mean(losses), accs)
 end
 
-initopt!(model)
+t_total = length(dtrn) * NUM_OF_EPOCHS
 
-#trnloss = [model(dtrn)]
-#devloss = [model(ddev)]
-devloss = []
+initopt!(model, t_total, lr=LEARNING_RATE)
+
+dev_accs = [0.0]
 best_acc = 0.0
-for epoch in 1:30
+for epoch in 1:NUM_OF_EPOCHS
     global best_acc
     print(Dates.format(now(), "HH:MM:SS"), "  ->  ")
     println("Epoch : ", epoch)
     flush(stdout)
-    (best_acc, lss) = mytrain!(model, dtrn, ddev, best_acc)
-    #push!(trnloss, model(dtrn))
+    (best_acc, lss, acc) = mytrain!(model, dtrn, ddev, best_acc)
+    append!(dev_accs, acc)
     print(Dates.format(now(), "HH:MM:SS"), "  ->  ")
-    println("Training loss at $epoch epoch is : $lss")
+    println("Training loss for $epoch epoch is : $lss")
+    println(dev_accs)
     flush(stdout)
     #=
     acc = accuracy2(model, ddev)
@@ -229,3 +239,5 @@ model = Knet.load("model_bert.jld2", "model")
 result = accuracy2(model, dtst)
 print(Dates.format(now(), "HH:MM:SS"), "  ->  ")
 println("Test accuracy is : $result")
+
+Knet.save("accuracies.jld2", "dev_accs", dev_accs)
