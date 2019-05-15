@@ -8,6 +8,7 @@ VOCABFILE = "bert-base-uncased-vocab.txt"
 NUM_CLASSES = 2
 LEARNING_RATE = 2e-5
 NUM_OF_EPOCHS = 30
+TRAIN = false
 
 token2int = Dict()
 f = open(VOCABFILE) do file
@@ -143,16 +144,21 @@ include("model.jl")
 # Embedding Size, Vocab Size, Intermediate Hidden Size, Max Sequence Length, Sequence Length, Num of Segments, Num of Heads in Attention, Num of Encoders in Stack, Batch Size, Matrix Type, General Dropout Rate, Attention Dropout Rate, Activation Function 
 config = Config(768, 30522, 3072, 512, 64, 2, 12, 12, 8, KnetArray{Float32}, 0.1, 0.1, gelu)
 
-dtrn = ClassificationData2("../project/sst-train.tsv", batchsize=config.batchsize, seq_len=config.seq_len)
-ddev = ClassificationData2("../project/sst-dev.tsv", batchsize=config.batchsize, seq_len=config.seq_len)
-dtst = ClassificationData2("../project/sst-test.tsv", batchsize=config.batchsize, seq_len=config.seq_len)
+if TRAIN
+    dtrn = ClassificationData2("../project/sst-train.tsv", batchsize=config.batchsize, seq_len=config.seq_len)
+    ddev = ClassificationData2("../project/sst-dev.tsv", batchsize=config.batchsize, seq_len=config.seq_len)
+else
+    dtst = ClassificationData2("../project/sst-test.tsv", batchsize=config.batchsize, seq_len=config.seq_len)
+end
 
-model = BertClassification(config, NUM_CLASSES)
+if TRAIN
+    model = BertClassification(config, NUM_CLASSES)
 
-@pyimport torch
-torch_model = torch.load("/scratch/users/omutlu/dl_course/project/pytorch_model.bin")
+    @pyimport torch
+    torch_model = torch.load("/scratch/users/omutlu/dl_course/project/pytorch_model.bin")
 
-model = load_from_torch_base(model, config.num_encoder, config.atype, torch_model)
+    model = load_from_torch_base(model, config.num_encoder, config.atype, torch_model)
+end
 
 function accuracy2(model, dtst)
     true_count = 0
@@ -207,37 +213,38 @@ function mytrain!(model, dtrn, ddev, best_acc)
     return (best_acc, Knet.mean(losses), accs)
 end
 
-t_total = length(dtrn) * NUM_OF_EPOCHS
+if TRAIN
+    t_total = length(dtrn) * NUM_OF_EPOCHS
+    initopt!(model, t_total, lr=LEARNING_RATE)
 
-initopt!(model, t_total, lr=LEARNING_RATE)
-
-dev_accs = [0.0]
-best_acc = 0.0
-for epoch in 1:NUM_OF_EPOCHS
-    global best_acc
-    print(Dates.format(now(), "HH:MM:SS"), "  ->  ")
-    println("Epoch : ", epoch)
-    flush(stdout)
-    (best_acc, lss, acc) = mytrain!(model, dtrn, ddev, best_acc)
-    append!(dev_accs, acc)
-    print(Dates.format(now(), "HH:MM:SS"), "  ->  ")
-    println("Training loss for $epoch epoch is : $lss")
-    println(dev_accs)
-    flush(stdout)
-    #=
-    acc = accuracy2(model, ddev)
-    println("Accuracy : ", acc)
-    if acc > best_acc
-        best_acc = acc
-        println("Saving...")
-        Knet.save("model_bert.jld2", "model", model)
+    dev_accs = [0.0]
+    best_acc = 0.0
+    for epoch in 1:NUM_OF_EPOCHS
+        global best_acc
+        print(Dates.format(now(), "HH:MM:SS"), "  ->  ")
+        println("Epoch : ", epoch)
+        flush(stdout)
+        (best_acc, lss, acc) = mytrain!(model, dtrn, ddev, best_acc)
+        append!(dev_accs, acc)
+        print(Dates.format(now(), "HH:MM:SS"), "  ->  ")
+        println("Training loss for $epoch epoch is : $lss")
+        println(dev_accs)
+        flush(stdout)
+        #=
+        acc = accuracy2(model, ddev)
+        println("Accuracy : ", acc)
+        if acc > best_acc
+            best_acc = acc
+            println("Saving...")
+            Knet.save("model_bert.jld2", "model", model)
+        end
+        =#
     end
-    =#
+
+    Knet.save("accuracies.jld2", "dev_accs", dev_accs)
+else
+    model = Knet.load("model_bert.jld2", "model")
+    result = accuracy2(model, dtst)
+    print(Dates.format(now(), "HH:MM:SS"), "  ->  ")
+    println("Test accuracy is : $result")
 end
-
-model = Knet.load("model_bert.jld2", "model")
-result = accuracy2(model, dtst)
-print(Dates.format(now(), "HH:MM:SS"), "  ->  ")
-println("Test accuracy is : $result")
-
-Knet.save("accuracies.jld2", "dev_accs", dev_accs)

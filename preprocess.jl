@@ -29,15 +29,31 @@ function wordpiece_tokenize(token, dict)
     return out_tokens
 end
 
-# Not implemented yet
 function process_punc(tokens)
-    return tokens
+    out_tokens = []
+    for token in tokens
+        out = []
+        str = ""
+        for (i, char) in enumerate(token)
+            if ispunct(char)
+                str != "" && push!(out, str)
+                str = ""
+                push!(out, string(char))
+            else
+                str = string(str, char)
+            end
+        end
+        str != "" && push!(out, str)
+        append!(out_tokens, out)
+    end
+    return out_tokens
 end
 
-function tokenize(text, dict)
+function tokenize(text, dict; lower_case=true)
     text = strip(text)
-    if text == ""
-        return []
+    text == "" && return []
+    if lower_case
+        text = lowercase(text)
     end
     tokens = split(text)
     tokens = process_punc(tokens)
@@ -48,8 +64,8 @@ function tokenize(text, dict)
     return out_tokens
 end
 
-function convert_to_int_array(text, dict)
-    tokens = tokenize(text, dict)
+function convert_to_int_array(text, dict; lower_case=true)
+    tokens = tokenize(text, dict, lower_case=lower_case)
     out = Int[]
     for token in tokens
         if token in keys(dict)
@@ -61,12 +77,12 @@ function convert_to_int_array(text, dict)
     return out
 end
 
-function read_and_process(filename, dict)
+function read_and_process(filename, dict; lower_case=true)
     data = CSV.File(filename, delim="\t")
     x = Array{Int,1}[]
     y = Int8[]
     for i in data
-        push!(x, convert_to_int_array(i.sentence, dict))
+        push!(x, convert_to_int_array(i.sentence, dict, lower_case=lower_case))
         push!(y, Int8(i.label + 1)) # negative 1, positive 2
     end
     
