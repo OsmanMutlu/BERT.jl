@@ -1,5 +1,3 @@
-using CSV
-
 function wordpiece_tokenize(token, dict)
     # This is a longest-match-first algorithm.
     out_tokens = []
@@ -62,35 +60,4 @@ function tokenize(text, dict; lower_case=true)
         append!(out_tokens, wordpiece_tokenize(token, dict))
     end
     return out_tokens
-end
-
-function convert_to_int_array(text, dict; lower_case=true)
-    tokens = tokenize(text, dict, lower_case=lower_case)
-    out = Int[]
-    for token in tokens
-        if token in keys(dict)
-            push!(out, dict[token])
-        else
-            push!(out, dict["[UNK]"])
-        end
-    end
-    return out
-end
-
-function read_and_process(filename, dict; lower_case=true)
-    data = CSV.File(filename, delim="\t")
-    x = Array{Int,1}[]
-    y = Int8[]
-    for i in data
-        push!(x, convert_to_int_array(i.sentence, dict, lower_case=lower_case))
-        push!(y, Int8(i.label + 1)) # negative 1, positive 2
-    end
-    
-    # Padding to maximum
-#     max_seq = findmax(length.(x))[1]
-#     for i in 1:length(x)
-#         append!(x[i], fill(1, max_seq - length(x[i]))) # 1 is for "[PAD]"
-#     end
-    
-    return (x, y)
 end

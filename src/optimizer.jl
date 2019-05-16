@@ -1,4 +1,3 @@
-using LinearAlgebra, Knet
 import Knet: update!
 
 warmup_cosine(x, warmup=0.002) = x < warmup ? x/warmup : 0.5 * (1.0 + cos(π * x))

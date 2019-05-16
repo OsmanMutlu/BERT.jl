@@ -1,10 +1,15 @@
+using BERT
 import Base: length, iterate
 using Random
 using CSV
 using PyCall
+using Dates
 
 VOCABFILE = "bert-base-uncased-vocab.txt"
 NUM_CLASSES = 2
+LEARNING_RATE = 2e-5
+NUM_OF_EPOCHS = 30
+TRAIN = false
 
 token2int = Dict()
 f = open(VOCABFILE) do file
@@ -16,7 +21,39 @@ end
 int2token = Dict(value => key for (key, value) in token2int)
 VOCABSIZE = length(token2int)
 
-include("preprocess.jl")
+# include("preprocess.jl")
+# include("optimizer.jl")
+
+function convert_to_int_array(text, dict; lower_case=true)
+    tokens = bert_tokenize(text, dict, lower_case=lower_case)
+    out = Int[]
+    for token in tokens
+        if token in keys(dict)
+            push!(out, dict[token])
+        else
+            push!(out, dict["[UNK]"])
+        end
+    end
+    return out
+end
+
+function read_and_process(filename, dict; lower_case=true)
+    data = CSV.File(filename, delim="\t")
+    x = Array{Int,1}[]
+    y = Int8[]
+    for i in data
+        push!(x, convert_to_int_array(i.sentence, dict, lower_case=lower_case))
+        push!(y, Int8(i.label + 1)) # negative 1, positive 2
+    end
+    
+    # Padding to maximum
+#     max_seq = findmax(length.(x))[1]
+#     for i in 1:length(x)
+#         append!(x[i], fill(1, max_seq - length(x[i]))) # 1 is for "[PAD]"
+#     end
+    
+    return (x, y)
+end
 
 mutable struct ClassificationData
     input_ids
@@ -134,21 +171,26 @@ function iterate(d::ClassificationData2, state=ifelse(d.shuffled, randperm(d.nin
     return ((input_ids, input_mask, segment_ids, labels), new_state)
 end
 
-include("model.jl")
+# include("model.jl")
 
 # Embedding Size, Vocab Size, Intermediate Hidden Size, Max Sequence Length, Sequence Length, Num of Segments, Num of Heads in Attention, Num of Encoders in Stack, Batch Size, Matrix Type, General Dropout Rate, Attention Dropout Rate, Activation Function 
-config = Config(768, 30522, 3072, 512, 64, 2, 12, 12, 8, KnetArray{Float32}, 0.1, 0.1, gelu)
+config = BertConfig(768, 30522, 3072, 512, 64, 2, 12, 12, 8, KnetArray{Float32}, 0.1, 0.1, gelu)
 
-# First one is tokenized in here in julia. Second one is tokenized in python. First one scores -> 0.7885, second one scores -> 0.945 exactly as pytorch model
-#dtst = ClassificationData("../project/mytest.tsv", token2int, batchsize=config.batchsize, seq_len=config.seq_len)
-dtst = ClassificationData2("../project/sst-test.tsv", batchsize=config.batchsize, seq_len=config.seq_len)
+if TRAIN
+    dtrn = ClassificationData2("../project/sst-train.tsv", batchsize=config.batchsize, seq_len=config.seq_len)
+    ddev = ClassificationData2("../project/sst-dev.tsv", batchsize=config.batchsize, seq_len=config.seq_len)
+else
+    dtst = ClassificationData2("../project/sst-test.tsv", batchsize=config.batchsize, seq_len=config.seq_len)
+end
 
-model = BertClassification(config, NUM_CLASSES)
+if TRAIN
+    model = BertClassification(config, NUM_CLASSES)
 
-@pyimport torch
-torch_model = torch.load("/scratch/users/omutlu/dl_course/project/model-64-32.pt")
+    @pyimport torch
+    torch_model = torch.load("/scratch/users/omutlu/dl_course/project/pytorch_model.bin")
 
-model = load_from_torch_classification(model, config.num_encoder, config.atype, torch_model)
+    model = load_from_torch_base(model, config.num_encoder, config.atype, torch_model)
+end
 
 function accuracy2(model, dtst)
     true_count = 0
@@ -162,6 +204,79 @@ function accuracy2(model, dtst)
     return true_count/all_count
 end
 
-result = accuracy2(model, dtst)
+function initopt!(model, t_total; lr=0.001, warmup=0.1)
+    for par in params(model)
+        if length(size(value(par))) === 1
+            par.opt = BertAdam(lr=lr, warmup=warmup, t_total=t_total, w_decay_rate=0.01)
+        else
+            par.opt = BertAdam(lr=lr, warmup=warmup, t_total=t_total)
+        end
+    end
+end
 
-println("Test accuracy is : $result")
+function mytrain!(model, dtrn, ddev, best_acc)
+    losses = []
+    accs = []
+    for (k, (x, attention_mask, segment_ids, labels)) in enumerate(dtrn)
+        J = @diff model(x, segment_ids, labels, attention_mask=attention_mask)
+        for par in params(model)
+            g = grad(J, par)
+            update!(value(par), g, par.opt)
+        end
+        push!(losses, value(J))
+        if k % 500 == 0
+            print(Dates.format(now(), "HH:MM:SS"), "  ->  ")
+            println("Training loss up to $k iteration is : ", Knet.mean(losses))
+            flush(stdout)
+            acc = accuracy2(model, ddev)
+            push!(accs, acc)
+            print(Dates.format(now(), "HH:MM:SS"), "  ->  ")
+            println("Accuracy at $k iteration : ", acc)
+            flush(stdout)
+            if acc > best_acc
+                best_acc = acc
+                print(Dates.format(now(), "HH:MM:SS"), "  ->  ")
+                println("Saving...")
+                Knet.save("model_bert.jld2", "model", model)
+                flush(stdout)
+            end
+        end
+    end
+    return (best_acc, Knet.mean(losses), accs)
+end
+
+if TRAIN
+    t_total = length(dtrn) * NUM_OF_EPOCHS
+    initopt!(model, t_total, lr=LEARNING_RATE)
+
+    dev_accs = [0.0]
+    best_acc = 0.0
+    for epoch in 1:NUM_OF_EPOCHS
+        global best_acc
+        print(Dates.format(now(), "HH:MM:SS"), "  ->  ")
+        println("Epoch : ", epoch)
+        flush(stdout)
+        (best_acc, lss, acc) = mytrain!(model, dtrn, ddev, best_acc)
+        append!(dev_accs, acc)
+        print(Dates.format(now(), "HH:MM:SS"), "  ->  ")
+        println("Training loss for $epoch epoch is : $lss")
+        println(dev_accs)
+        flush(stdout)
+        #=
+        acc = accuracy2(model, ddev)
+        println("Accuracy : ", acc)
+        if acc > best_acc
+            best_acc = acc
+            println("Saving...")
+            Knet.save("model_bert.jld2", "model", model)
+        end
+        =#
+    end
+
+    Knet.save("accuracies.jld2", "dev_accs", dev_accs)
+else
+    model = Knet.load("model_bert.jld2", "model")
+    result = accuracy2(model, dtst)
+    print(Dates.format(now(), "HH:MM:SS"), "  ->  ")
+    println("Test accuracy is : $result")
+end

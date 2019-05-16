@@ -1,5 +1,3 @@
-using Knet
-using SpecialFunctions
 # import Base: *
 # import Knet: getindex, setindex!
 
