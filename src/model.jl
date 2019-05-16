@@ -326,7 +326,7 @@ mutable struct NSPHead <: Layer
     linear::Linear
 end
 
-NSPHead(embed_size; atype=Array{Float32}) = NSPHead(Linear(embed_size, 2, atype=atype))
+NSPHead(embed_size::Int; atype=Array{Float32}) = NSPHead(Linear(embed_size, 2, atype=atype))
 
 (n::NSPHead)(x) = n.linear(x)
 
