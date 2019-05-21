@@ -1,6 +1,6 @@
 using BERT
 
-config = BertConfig(128, 30022, 256, 512, 4, 2, 8, 2, 3, Array{Float32}, 0.1, 0.1, relu)
+config = BertConfig(128, 30022, 256, 512, 4, 2, 8, 2, 3, Array{Float32}, 0.1, 0.1, "relu")
 
 model = BertPreTraining(config)
 

@@ -252,7 +252,7 @@ mutable struct FeedForward <: Layer
 end
 
 function FeedForward(config)
-    dense = Dense(config.embed_size, config.ff_hidden_size, func=config.func, atype=config.atype, threeD=true)
+    dense = Dense(config.embed_size, config.ff_hidden_size, func=eval(Meta.parse(config.func)), atype=config.atype, threeD=true)
     linear = Linear3D(config.ff_hidden_size, config.embed_size, atype=config.atype)
     return FeedForward(dense, linear, config.pdrop)
 end
@@ -337,7 +337,7 @@ mutable struct MLMHead <: Layer
 end
 
 function MLMHead(config, embedding_matrix)
-    dense = Dense(config.embed_size, config.embed_size, func=config.func, pdrop=0.0, atype=config.atype, threeD=true)
+    dense = Dense(config.embed_size, config.embed_size, func=eval(Meta.parse(config.func)), pdrop=0.0, atype=config.atype, threeD=true)
     layer_norm = LayerNormalization(config.embed_size, atype=config.atype)
     linear = Linear3D(config.embed_size, config.vocab_size, atype=config.atype)
     # TODO : Do this a shared weight
@@ -418,7 +418,7 @@ function (b::BertClassification)(dtrn)
     return Knet.mean(lvals)
 end
 
-mutable struct Config
+mutable struct BertConfig
     embed_size::Int
     vocab_size::Int
     ff_hidden_size::Int

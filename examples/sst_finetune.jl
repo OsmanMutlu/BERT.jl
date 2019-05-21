@@ -1,4 +1,5 @@
 using BERT
+using Knet
 import Base: length, iterate
 using Random
 using CSV
@@ -9,7 +10,7 @@ VOCABFILE = "bert-base-uncased-vocab.txt"
 NUM_CLASSES = 2
 LEARNING_RATE = 2e-5
 NUM_OF_EPOCHS = 30
-TRAIN = false
+TRAIN = true
 
 token2int = Dict()
 f = open(VOCABFILE) do file
@@ -115,79 +116,79 @@ function iterate(d::ClassificationData, state=ifelse(d.shuffled, randperm(d.nins
     return ((input_ids, input_mask, segment_ids, labels), new_state)
 end
 
-mutable struct ClassificationData2
-    input_ids
-    input_mask
-    segment_ids
-    labels
-    batchsize
-    ninstances
-    shuffled
-end
+# mutable struct ClassificationData2
+#     input_ids
+#     input_mask
+#     segment_ids
+#     labels
+#     batchsize
+#     ninstances
+#     shuffled
+# end
 
 
-function ClassificationData2(input_file; batchsize=8, shuffled=true, seq_len=64)
-    input_ids = []
-    input_mask = []
-    segment_ids = []
-    labels = []
-    f = open(input_file)
-    tmp = split.(readlines(f), "\t")
-    for i in 1:length(tmp)
-        instance = eval.(Meta.parse.(tmp[i]))
-        push!(input_ids, (instance[1] .+ 1)[1:seq_len])
-        push!(input_mask, instance[2][1:seq_len])
-        push!(segment_ids, (instance[3] .+ 1)[1:seq_len])
-        push!(labels, (instance[4] + 1))
-    end
-    ninstances = length(input_ids)
-    return ClassificationData2(input_ids, input_mask, segment_ids, labels, batchsize, ninstances, shuffled)
-end
+# function ClassificationData2(input_file; batchsize=8, shuffled=true, seq_len=64)
+#     input_ids = []
+#     input_mask = []
+#     segment_ids = []
+#     labels = []
+#     f = open(input_file)
+#     tmp = split.(readlines(f), "\t")
+#     for i in 1:length(tmp)
+#         instance = eval.(Meta.parse.(tmp[i]))
+#         push!(input_ids, (instance[1] .+ 1)[1:seq_len])
+#         push!(input_mask, instance[2][1:seq_len])
+#         push!(segment_ids, (instance[3] .+ 1)[1:seq_len])
+#         push!(labels, (instance[4] + 1))
+#     end
+#     ninstances = length(input_ids)
+#     return ClassificationData2(input_ids, input_mask, segment_ids, labels, batchsize, ninstances, shuffled)
+# end
 
 
-function length(d::ClassificationData2)
-    d, r = divrem(d.ninstances, d.batchsize)
-    return r == 0 ? d : d+1
-end
+# function length(d::ClassificationData2)
+#     d, r = divrem(d.ninstances, d.batchsize)
+#     return r == 0 ? d : d+1
+# end
 
-function iterate(d::ClassificationData2, state=ifelse(d.shuffled, randperm(d.ninstances), 1:d.ninstances))
+# function iterate(d::ClassificationData2, state=ifelse(d.shuffled, randperm(d.ninstances), 1:d.ninstances))
 
-    state === nothing && return nothing
+#     state === nothing && return nothing
 
-    if length(state) > d.batchsize
-        new_state = state[d.batchsize+1:end]
-        input_ids = hcat(d.input_ids[state[1:d.batchsize]]...)
-        input_mask = hcat(d.input_mask[state[1:d.batchsize]]...)
-        segment_ids = hcat(d.segment_ids[state[1:d.batchsize]]...)
-        labels = hcat(d.labels[state[1:d.batchsize]]...)
-    else
-        new_state = nothing
-        input_ids = hcat(d.input_ids[state]...)
-        input_mask = hcat(d.input_mask[state]...)
-        segment_ids = hcat(d.segment_ids[state]...)
-        labels = hcat(d.labels[state]...)
-    end
+#     if length(state) > d.batchsize
+#         new_state = state[d.batchsize+1:end]
+#         input_ids = hcat(d.input_ids[state[1:d.batchsize]]...)
+#         input_mask = hcat(d.input_mask[state[1:d.batchsize]]...)
+#         segment_ids = hcat(d.segment_ids[state[1:d.batchsize]]...)
+#         labels = hcat(d.labels[state[1:d.batchsize]]...)
+#     else
+#         new_state = nothing
+#         input_ids = hcat(d.input_ids[state]...)
+#         input_mask = hcat(d.input_mask[state]...)
+#         segment_ids = hcat(d.segment_ids[state]...)
+#         labels = hcat(d.labels[state]...)
+#     end
     
-    return ((input_ids, input_mask, segment_ids, labels), new_state)
-end
+#     return ((input_ids, input_mask, segment_ids, labels), new_state)
+# end
 
 # include("model.jl")
 
 # Embedding Size, Vocab Size, Intermediate Hidden Size, Max Sequence Length, Sequence Length, Num of Segments, Num of Heads in Attention, Num of Encoders in Stack, Batch Size, Matrix Type, General Dropout Rate, Attention Dropout Rate, Activation Function 
-config = BertConfig(768, 30522, 3072, 512, 64, 2, 12, 12, 8, KnetArray{Float32}, 0.1, 0.1, gelu)
+config = BertConfig(768, 30522, 3072, 512, 64, 2, 12, 12, 8, KnetArray{Float32}, 0.1, 0.1, "gelu")
 
 if TRAIN
-    dtrn = ClassificationData2("../project/sst-train.tsv", batchsize=config.batchsize, seq_len=config.seq_len)
-    ddev = ClassificationData2("../project/sst-dev.tsv", batchsize=config.batchsize, seq_len=config.seq_len)
+    dtrn = ClassificationData("../project/mytrain.tsv", token2int, batchsize=config.batchsize, seq_len=config.seq_len)
+    ddev = ClassificationData("../project/dev.tsv", token2int, batchsize=config.batchsize, seq_len=config.seq_len)
 else
-    dtst = ClassificationData2("../project/sst-test.tsv", batchsize=config.batchsize, seq_len=config.seq_len)
+    dtst = ClassificationData("../project/mytest.tsv", token2int, batchsize=config.batchsize, seq_len=config.seq_len)
 end
 
 if TRAIN
     model = BertClassification(config, NUM_CLASSES)
 
     @pyimport torch
-    torch_model = torch.load("/scratch/users/omutlu/dl_course/project/pytorch_model.bin")
+    torch_model = torch.load("../project/pytorch_model.bin")
 
     model = load_from_torch_base(model, config.num_encoder, config.atype, torch_model)
 end

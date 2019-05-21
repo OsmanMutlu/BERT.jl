@@ -47,7 +47,7 @@ function process_punc(tokens)
     return out_tokens
 end
 
-function tokenize(text, dict; lower_case=true)
+function bert_tokenize(text, dict; lower_case=true)
     text = strip(text)
     text == "" && return []
     if lower_case
